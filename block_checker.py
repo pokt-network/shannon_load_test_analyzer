@@ -1,29 +1,34 @@
-import os
 import json
 import logging
 import time
 import argparse
 from dataclasses import dataclass
-from enum import Enum
 from pathlib import Path
 from typing import Optional, Dict
 import subprocess
-from datetime import datetime
+import base64
 
 
 @dataclass
 class Config:
     node_url: str = "https://shannon-testnet-grove-rpc.beta.poktroll.com"
-    output_dir: Path = Path("./block_results")
+    output_dir: Path = Path("/tmp/block_results")
     rate_limit: float = 0.5
     max_retries: int = 3
     retry_delay: float = 1.0
 
 
 @dataclass
+class BlockStats:
+    total_tx_bytes: int
+    num_txs: int
+
+
+@dataclass
 class BlockData:
     block_file: Path
     results_file: Path
+    stats: BlockStats
 
 
 class BlockFetchError(Exception):
@@ -77,13 +82,19 @@ class BlockFetcher:
             self.logger.error(f"Invalid JSON in response: {output_file}")
             return False
 
-    def _fetch_single(self, block_id: int, is_block_results: bool, force: bool = False) -> Path:
+    def _compute_block_stats(self, block_data: dict) -> BlockStats:
+        txs = block_data.get("data", {}).get("txs", [])
+        total_bytes = sum(len(base64.b64decode(tx)) for tx in txs)
+        return BlockStats(total_bytes, len(txs))
+
+    def _fetch_single(self, block_id: int, is_block_results: bool, force: bool = False) -> tuple[Path, Optional[dict]]:
         file_prefix = "block-results" if is_block_results else "block"
         output_file = self.config.output_dir / f"{file_prefix}_{block_id}.json"
 
         if not force and output_file.exists() and self._validate_response(output_file):
             self.logger.info(f"Using cached {file_prefix} {block_id} from {output_file}")
-            return output_file
+            with open(output_file) as f:
+                return output_file, json.load(f)
 
         for attempt in range(self.config.max_retries):
             try:
@@ -98,14 +109,15 @@ class BlockFetcher:
                     text=True,
                 )
 
+                data = json.loads(process.stdout)
                 output_file.write_text(process.stdout)
 
                 if self._validate_response(output_file):
                     self.logger.info(f"Successfully saved {file_prefix} {block_id} to {output_file}")
-                    return output_file
+                    return output_file, data
 
-            except subprocess.CalledProcessError as e:
-                self.logger.warning(f"Attempt {attempt + 1} failed for {file_prefix} {block_id}: {e.stderr}")
+            except (subprocess.CalledProcessError, json.JSONDecodeError) as e:
+                self.logger.warning(f"Attempt {attempt + 1} failed for {file_prefix} {block_id}: {str(e)}")
                 if attempt < self.config.max_retries - 1:
                     time.sleep(self.config.retry_delay)
                 continue
@@ -121,17 +133,19 @@ class BlockFetcher:
             force: If True, fetch even if cached files exist
 
         Returns:
-            BlockData containing paths to both files
+            BlockData containing paths to both files and block statistics
         """
-        block_file = self._fetch_single(block_id, is_block_results=False, force=force)
-        results_file = self._fetch_single(block_id, is_block_results=True, force=force)
-        return BlockData(block_file, results_file)
+        block_file, block_data = self._fetch_single(block_id, is_block_results=False, force=force)
+        results_file, _ = self._fetch_single(block_id, is_block_results=True, force=force)
+
+        stats = self._compute_block_stats(block_data)
+        return BlockData(block_file, results_file, stats)
 
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Fetch block data from poktroll network")
     parser.add_argument("--block-id", type=int, default=57333, help="Block height to query")
-    parser.add_argument("--output-dir", type=Path, default="./block_results", help="Output directory")
+    parser.add_argument("--output-dir", type=Path, default="/tmp/block_results", help="Output directory")
     parser.add_argument("--node-url", help="Node URL")
     parser.add_argument("--force", action="store_true", help="Force fetch even if cached")
     return parser.parse_args()
@@ -146,8 +160,13 @@ def main():
 
     try:
         block_data = fetcher.fetch_block(args.block_id, args.force)
+        print("########")
         print(f"Block data saved to: {block_data.block_file}")
         print(f"Block results saved to: {block_data.results_file}")
+        print(f"Block stats:")
+        print(f"  Total transactions: {block_data.stats.num_txs}")
+        print(f"  Total transaction bytes: {block_data.stats.total_tx_bytes}")
+        print("########")
     except BlockFetchError as e:
         print(f"Error: {e}")
         exit(1)
