@@ -78,9 +78,11 @@ class RangeStats:
             output.append(f"  Number of relays: {block.stats.total_relays:,}")
             output.append("")
 
-        output.append("--------------------")
-        output.append("Total Statistics:")
-        output.append("----------------")
+        first_block = self.blocks[0].block_id if self.blocks else 0
+        last_block = self.blocks[-1].block_id if self.blocks else 0
+        output.append("------------------------------------------")
+        output.append(f"Total Statistics ({first_block} - {last_block}):")
+        output.append("------------------------------------------")
         output.append(f"Total Transactions: {self.total_stats.num_txs:,}")
         output.append(f"Total Transaction size: {self.total_stats.tx_mb:.2f} MB")
         output.append(f"Total Claimed POKT: {self.total_stats.total_claimed_pokt:.6f}")
@@ -294,8 +296,10 @@ class BlockFetcher:
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Fetch block data from poktroll network")
-    parser.add_argument("--block-start", type=int, default=57333, help="Starting block height")
-    parser.add_argument("--block-end", type=int, default=57335, help="Ending block height")
+    # parser.add_argument("--block-start", type=int, default=57333, help="Starting block height")
+    parser.add_argument("--block-start", type=int, default=58108, help="Starting block height")
+    # parser.add_argument("--block-end", type=int, default=57335, help="Ending block height")
+    parser.add_argument("--block-end", type=int, default=58119, help="Ending block height")
     parser.add_argument("--output-dir", type=Path, default="./block_results", help="Output directory")
     parser.add_argument("--node-url", help="Node URL")
     parser.add_argument("--force", action="store_true", help="Force fetch even if cached")
