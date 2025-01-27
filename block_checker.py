@@ -7,12 +7,13 @@ from pathlib import Path
 from typing import Optional, Dict, List
 import subprocess
 import base64
+import pandas as pd
 
 
 @dataclass
 class Config:
     node_url: str = "https://shannon-testnet-grove-rpc.beta.poktroll.com"
-    output_dir: Path = Path("/tmp/block_results")
+    output_dir: Path = Path("./block_results")
     rate_limit: float = 0.5
     max_retries: int = 3
     retry_delay: float = 1.0
@@ -20,7 +21,7 @@ class Config:
 
 @dataclass
 class EventMetrics:
-    claimed_pokt: float = 0  # Changed from upokt to pokt
+    claimed_pokt: float = 0
     claimed_compute_units: int = 0
     estimated_compute_units: int = 0
     num_relays: int = 0
@@ -29,21 +30,21 @@ class EventMetrics:
 @dataclass
 class BlockStats:
     tx_mb: float
-    block_mb: float  # Added full block size
+    block_mb: float
     num_txs: int
-    total_claimed_pokt: float  # Changed from upokt to pokt
+    total_claimed_pokt: float
     total_claimed_compute_units: int
     total_estimated_compute_units: int
     total_relays: int
 
     @classmethod
     def zero(cls):
-        return cls(0.0, 0.0, 0, 0.0, 0, 0, 0)  # Updated to include block_mb
+        return cls(0.0, 0.0, 0, 0.0, 0, 0, 0)
 
-    def __add__(self, other):
+    def __add__(self: "BlockStats", other: "BlockStats"):
         return BlockStats(
             tx_mb=self.tx_mb + other.tx_mb,
-            block_mb=self.block_mb + other.block_mb,  # Added block_mb
+            block_mb=self.block_mb + other.block_mb,
             num_txs=self.num_txs + other.num_txs,
             total_claimed_pokt=self.total_claimed_pokt + other.total_claimed_pokt,
             total_claimed_compute_units=self.total_claimed_compute_units + other.total_claimed_compute_units,
@@ -148,75 +149,68 @@ class BlockFetcher:
             self.logger.error(f"Invalid JSON in response: {output_file}")
             return False
 
-    def _extract_event_metrics(self, event: Dict) -> EventMetrics:
-        event_names = ["EventClaimCreated", "EventClaimSettled", "EventClaimExpired"]
-        events = ["poktroll.proof." + event for event in event_names]
-        if event.get("type") in events:
-            return EventMetrics()
-
+    def _extract_event_metrics_created(self, event: Dict) -> EventMetrics:
         metrics = EventMetrics()
-        for attr in event.get("attributes", []):
-            key = attr["key"]
-            value = attr["value"]
-
-            if key == "claimed_upokt":
-                try:
-                    # Convert uPOKT to POKT by dividing by 10^6
-                    upokt_amount = int(json.loads(value)["amount"])
-                    metrics.claimed_pokt = upokt_amount / 1_000_000
-                except (json.JSONDecodeError, KeyError):
-                    metrics.claimed_pokt = 0
-
-            elif key == "num_claimed_compute_units":
-                try:
+        if event.get("type") == "poktroll.proof.EventClaimCreated":
+            for attr in event.get("attributes", []) or []:
+                key = attr["key"]
+                value = attr["value"]
+                if key == "claimed_upokt":
+                    metrics.claimed_pokt = int(json.loads(value)["amount"]) / 1_000_000
+                elif key == "num_claimed_compute_units":
                     metrics.claimed_compute_units = int(value.strip('"'))
-                except ValueError:
-                    metrics.claimed_compute_units = 0
-
-            elif key == "num_estimated_compute_units":
-                try:
+                elif key == "num_estimated_compute_units":
                     metrics.estimated_compute_units = int(value.strip('"'))
-                except ValueError:
-                    metrics.estimated_compute_units = 0
-
-            elif key == "num_relays":
-                try:
+                elif key == "num_relays":
                     metrics.num_relays = int(value.strip('"'))
-                except ValueError:
-                    metrics.num_relays = 0
+        return metrics
 
+    def _extract_event_metrics_settled(self, event: Dict) -> EventMetrics:
+        metrics = EventMetrics()
+        if event.get("type") == "poktroll.proof.EventClaimSettled":
+            for attr in event.get("attributes", []) or []:
+                print("OLSH", attr)
+                key = attr["key"]
+                value = attr["value"]
+                if key == "claimed_upokt":
+                    metrics.claimed_pokt = int(json.loads(value)["amount"]) / 1_000_000
+                elif key == "num_claimed_compute_units":
+                    metrics.claimed_compute_units = int(value.strip('"'))
+                elif key == "num_estimated_compute_units":
+                    metrics.estimated_compute_units = int(value.strip('"'))
+                elif key == "num_relays":
+                    metrics.num_relays = int(value.strip('"'))
         return metrics
 
     def _compute_block_stats(self, block_data: dict, block_results: dict) -> BlockStats:
-        # Calculate transaction stats
         txs = block_data.get("data", {}).get("txs", [])
         total_tx_bytes = sum(len(base64.b64decode(tx)) for tx in txs)
-        tx_mb = total_tx_bytes / (1024 * 1024)  # Convert to MB
+        tx_mb = total_tx_bytes / (1024 * 1024)
 
-        # Calculate full block size
         block_json = json.dumps(block_data)
-        block_mb = len(block_json.encode("utf-8")) / (1024 * 1024)  # Convert to MB
+        block_mb = len(block_json.encode("utf-8")) / (1024 * 1024)
 
-        # Initialize counters for new metrics
         total_claimed_pokt = 0.0
         total_claimed_compute_units = 0
         total_estimated_compute_units = 0
         total_relays = 0
 
-        # Process block results
-        tx_results = block_results.get("txs_results", [])
-        tx_results = tx_results or []  # Ensure tx_results is a list
-        for tx_result in tx_results:
+        for tx_result in block_results.get("txs_results", []) or []:
             for event in tx_result.get("events", []):
-                metrics = self._extract_event_metrics(event)
-                total_claimed_pokt += metrics.claimed_pokt
-                total_claimed_compute_units += metrics.claimed_compute_units
-                total_estimated_compute_units += metrics.estimated_compute_units
-                total_relays += metrics.num_relays
+                created_metrics = self._extract_event_metrics_created(event)
+                settled_metrics = self._extract_event_metrics_settled(event)
+                total_claimed_pokt += created_metrics.claimed_pokt + settled_metrics.claimed_pokt
+                total_claimed_compute_units += (
+                    created_metrics.claimed_compute_units + settled_metrics.claimed_compute_units
+                )
+                total_estimated_compute_units += (
+                    created_metrics.estimated_compute_units + settled_metrics.estimated_compute_units
+                )
+                total_relays += created_metrics.num_relays + settled_metrics.num_relays
 
         return BlockStats(
             tx_mb=tx_mb,
-            block_mb=block_mb,  # Added block_mb
+            block_mb=block_mb,
             num_txs=len(txs),
             total_claimed_pokt=total_claimed_pokt,
             total_claimed_compute_units=total_claimed_compute_units,
@@ -261,73 +255,30 @@ class BlockFetcher:
 
         raise BlockFetchError(f"Failed to fetch {file_prefix} {block_id} after {self.config.max_retries} attempts")
 
-    def fetch_block(self, block_id: int, force: bool = False) -> BlockData:
-        """
-        Fetch both block and block-results for a given block ID.
-
-        Args:
-            block_id: The block height to query
-            force: If True, fetch even if cached files exist
-
-        Returns:
-            BlockData containing paths to both files and block statistics
-        """
-        block_file, block_data = self._fetch_single(block_id, is_block_results=False, force=force)
-        results_file, results_data = self._fetch_single(block_id, is_block_results=True, force=force)
-
-        stats = self._compute_block_stats(block_data, results_data)
-        return BlockData(block_id, block_file, results_file, stats)
-
     def fetch_range(self, start_block: int, end_block: int, force: bool = False) -> RangeStats:
-        """
-        Fetch blocks and compute statistics for a range of block heights.
-
-        Args:
-            start_block: Starting block height
-            end_block: Ending block height (inclusive)
-            force: If True, fetch even if cached files exist
-
-        Returns:
-            RangeStats containing per-block data and aggregated statistics
-        """
         blocks = []
         total_stats = BlockStats.zero()
-
         for block_id in range(start_block, end_block + 1):
             try:
-                block_data = self.fetch_block(block_id, force)
-                blocks.append(block_data)
-                total_stats = total_stats + block_data.stats
+                block_file, block_data = self._fetch_single(block_id, is_block_results=False, force=force)
+                results_file, results_data = self._fetch_single(block_id, is_block_results=True, force=force)
+                stats = self._compute_block_stats(block_data, results_data)
+                blocks.append(BlockData(block_id, block_file, results_file, stats))
+                total_stats += stats
             except BlockFetchError as e:
                 self.logger.error(f"Failed to fetch block {block_id}: {e}")
-                continue
-
         return RangeStats(blocks, total_stats)
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Fetch block data from poktroll network")
-    parser.add_argument("--block-start", type=int, default=58108, help="Starting block height")
-    parser.add_argument("--block-end", type=int, default=58119, help="Ending block height")
-    parser.add_argument("--output-dir", type=Path, default="./block_results", help="Output directory")
-    parser.add_argument("--node-url", help="Node URL")
-    parser.add_argument("--force", action="store_true", help="Force fetch even if cached")
+    parser = argparse.ArgumentParser(description="Fetch block data")
+    parser.add_argument("--block-start", type=int, default=58108, help="Starting block")
+    parser.add_argument("--block-end", type=int, default=58119, help="Ending block")
     return parser.parse_args()
 
 
-def main():
-    args = parse_args()
-
-    config = Config(output_dir=args.output_dir, node_url=args.node_url if args.node_url else Config.node_url)
-    fetcher = BlockFetcher(config)
-
-    try:
-        range_stats = fetcher.fetch_range(args.block_start, args.block_end, args.force)
-        print(range_stats)
-    except BlockFetchError as e:
-        print(f"Error: {e}")
-        exit(1)
-
-
 if __name__ == "__main__":
-    main()
+    args = parse_args()
+    fetcher = BlockFetcher()
+    stats = fetcher.fetch_range(args.block_start, args.block_end)
+    print(stats)
