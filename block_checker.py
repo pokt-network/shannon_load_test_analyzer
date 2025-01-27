@@ -29,6 +29,7 @@ class EventMetrics:
 @dataclass
 class BlockStats:
     tx_mb: float
+    block_mb: float  # Added full block size
     num_txs: int
     total_claimed_pokt: float  # Changed from upokt to pokt
     total_claimed_compute_units: int
@@ -37,11 +38,12 @@ class BlockStats:
 
     @classmethod
     def zero(cls):
-        return cls(0.0, 0, 0.0, 0, 0, 0)  # Updated to include float for pokt
+        return cls(0.0, 0.0, 0, 0.0, 0, 0, 0)  # Updated to include block_mb
 
     def __add__(self, other):
         return BlockStats(
             tx_mb=self.tx_mb + other.tx_mb,
+            block_mb=self.block_mb + other.block_mb,  # Added block_mb
             num_txs=self.num_txs + other.num_txs,
             total_claimed_pokt=self.total_claimed_pokt + other.total_claimed_pokt,
             total_claimed_compute_units=self.total_claimed_compute_units + other.total_claimed_compute_units,
@@ -70,8 +72,9 @@ class RangeStats:
         output.append("--------------------")
         for block in self.blocks:
             output.append(f"Block {block.block_id}:")
-            output.append(f"  Transactions: {block.stats.num_txs:,}")
-            output.append(f"  Transaction size: {block.stats.tx_mb:.2f} MB")
+            output.append(f"  Num Txs: {block.stats.num_txs:,}")
+            output.append(f"  Txs size: {block.stats.tx_mb:.2f} MB")
+            output.append(f"  Full block size: {block.stats.block_mb:.2f} MB")  # Added block size output
             output.append(f"  Claimed POKT: {block.stats.total_claimed_pokt:.6f}")
             output.append(f"  Claimed compute units: {block.stats.total_claimed_compute_units:,}")
             output.append(f"  Estimated compute units: {block.stats.total_estimated_compute_units:,}")
@@ -83,8 +86,9 @@ class RangeStats:
         output.append("------------------------------------------")
         output.append(f"Total Statistics ({first_block} - {last_block}):")
         output.append("------------------------------------------")
-        output.append(f"Total Transactions: {self.total_stats.num_txs:,}")
-        output.append(f"Total Transaction size: {self.total_stats.tx_mb:.2f} MB")
+        output.append(f"Total Txs: {self.total_stats.num_txs:,}")
+        output.append(f"Total Txs size: {self.total_stats.tx_mb:.2f} MB")
+        output.append(f"Total Block size: {self.total_stats.block_mb:.2f} MB")  # Added total block size
         output.append(f"Total Claimed POKT: {self.total_stats.total_claimed_pokt:.6f}")
         output.append(f"Total Claimed compute units: {self.total_stats.total_claimed_compute_units:,}")
         output.append(f"Total Estimated compute units: {self.total_stats.total_estimated_compute_units:,}")
@@ -144,11 +148,13 @@ class BlockFetcher:
             self.logger.error(f"Invalid JSON in response: {output_file}")
             return False
 
-    def _extract_event_metrics(self, event: Dict) -> Dict:
-        if event.get("type") != "poktroll.proof.EventClaimCreated":
-            return {"claimed_pokt": 0, "claimed_compute_units": 0, "estimated_compute_units": 0, "num_relays": 0}
+    def _extract_event_metrics(self, event: Dict) -> EventMetrics:
+        event_names = ["EventClaimCreated", "EventClaimSettled", "EventClaimExpired"]
+        events = ["poktroll.proof." + event for event in event_names]
+        if event.get("type") in events:
+            return EventMetrics()
 
-        metrics = {}
+        metrics = EventMetrics()
         for attr in event.get("attributes", []):
             key = attr["key"]
             value = attr["value"]
@@ -157,38 +163,42 @@ class BlockFetcher:
                 try:
                     # Convert uPOKT to POKT by dividing by 10^6
                     upokt_amount = int(json.loads(value)["amount"])
-                    metrics["claimed_pokt"] = upokt_amount / 1_000_000
+                    metrics.claimed_pokt = upokt_amount / 1_000_000
                 except (json.JSONDecodeError, KeyError):
-                    metrics["claimed_pokt"] = 0
+                    metrics.claimed_pokt = 0
 
             elif key == "num_claimed_compute_units":
                 try:
-                    metrics["claimed_compute_units"] = int(value.strip('"'))
+                    metrics.claimed_compute_units = int(value.strip('"'))
                 except ValueError:
-                    metrics["claimed_compute_units"] = 0
+                    metrics.claimed_compute_units = 0
 
             elif key == "num_estimated_compute_units":
                 try:
-                    metrics["estimated_compute_units"] = int(value.strip('"'))
+                    metrics.estimated_compute_units = int(value.strip('"'))
                 except ValueError:
-                    metrics["estimated_compute_units"] = 0
+                    metrics.estimated_compute_units = 0
 
             elif key == "num_relays":
                 try:
-                    metrics["num_relays"] = int(value.strip('"'))
+                    metrics.num_relays = int(value.strip('"'))
                 except ValueError:
-                    metrics["num_relays"] = 0
+                    metrics.num_relays = 0
 
         return metrics
 
     def _compute_block_stats(self, block_data: dict, block_results: dict) -> BlockStats:
         # Calculate transaction stats
         txs = block_data.get("data", {}).get("txs", [])
-        total_bytes = sum(len(base64.b64decode(tx)) for tx in txs)
-        tx_mb = total_bytes / (1024 * 1024)  # Convert to MB
+        total_tx_bytes = sum(len(base64.b64decode(tx)) for tx in txs)
+        tx_mb = total_tx_bytes / (1024 * 1024)  # Convert to MB
+
+        # Calculate full block size
+        block_json = json.dumps(block_data)
+        block_mb = len(block_json.encode("utf-8")) / (1024 * 1024)  # Convert to MB
 
         # Initialize counters for new metrics
-        total_claimed_pokt = 0.0  # Changed from upokt to pokt
+        total_claimed_pokt = 0.0
         total_claimed_compute_units = 0
         total_estimated_compute_units = 0
         total_relays = 0
@@ -199,13 +209,14 @@ class BlockFetcher:
         for tx_result in tx_results:
             for event in tx_result.get("events", []):
                 metrics = self._extract_event_metrics(event)
-                total_claimed_pokt += metrics["claimed_pokt"]
-                total_claimed_compute_units += metrics["claimed_compute_units"]
-                total_estimated_compute_units += metrics["estimated_compute_units"]
-                total_relays += metrics["num_relays"]
+                total_claimed_pokt += metrics.claimed_pokt
+                total_claimed_compute_units += metrics.claimed_compute_units
+                total_estimated_compute_units += metrics.estimated_compute_units
+                total_relays += metrics.num_relays
 
         return BlockStats(
             tx_mb=tx_mb,
+            block_mb=block_mb,  # Added block_mb
             num_txs=len(txs),
             total_claimed_pokt=total_claimed_pokt,
             total_claimed_compute_units=total_claimed_compute_units,
@@ -296,9 +307,7 @@ class BlockFetcher:
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Fetch block data from poktroll network")
-    # parser.add_argument("--block-start", type=int, default=57333, help="Starting block height")
     parser.add_argument("--block-start", type=int, default=58108, help="Starting block height")
-    # parser.add_argument("--block-end", type=int, default=57335, help="Ending block height")
     parser.add_argument("--block-end", type=int, default=58119, help="Ending block height")
     parser.add_argument("--output-dir", type=Path, default="./block_results", help="Output directory")
     parser.add_argument("--node-url", help="Node URL")
