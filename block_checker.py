@@ -50,33 +50,69 @@ class BlockStats:
     tx_mb: float
     block_mb: float
     num_txs: int
-    total_claimed_pokt: float
-    total_claimed_compute_units: int
-    total_estimated_compute_units: int
-    total_relays: int
+    # Claimed metrics
+    claimed_pokt: float
+    claimed_compute_units: int
+    claimed_estimated_compute_units: int
+    claimed_relays: int
+    # Settled metrics
+    settled_pokt: float
+    settled_compute_units: int
+    settled_estimated_compute_units: int
+    settled_relays: int
+    # Sets
     unique_applications: Set[str]
     unique_suppliers: Set[str]
     unique_sessions: Set[str]
+    # Message counts
     total_messages: int = 0
     claim_messages: int = 0
     proof_messages: int = 0
 
     @classmethod
     def zero(cls):
-        return cls(0.0, 0.0, 0, 0.0, 0, 0, 0, set(), set(), set())
+        return cls(
+            0.0,
+            0.0,
+            0,  # Basic stats
+            0.0,
+            0,
+            0,
+            0,  # Claimed metrics
+            0.0,
+            0,
+            0,
+            0,  # Settled metrics
+            set(),
+            set(),
+            set(),  # Sets
+            0,
+            0,
+            0,  # Message counts
+        )
 
     def __add__(self: "BlockStats", other: "BlockStats"):
         return BlockStats(
             tx_mb=self.tx_mb + other.tx_mb,
             block_mb=self.block_mb + other.block_mb,
             num_txs=self.num_txs + other.num_txs,
-            total_claimed_pokt=self.total_claimed_pokt + other.total_claimed_pokt,
-            total_claimed_compute_units=self.total_claimed_compute_units + other.total_claimed_compute_units,
-            total_estimated_compute_units=self.total_estimated_compute_units + other.total_estimated_compute_units,
-            total_relays=self.total_relays + other.total_relays,
+            # Claimed metrics
+            claimed_pokt=self.claimed_pokt + other.claimed_pokt,
+            claimed_compute_units=self.claimed_compute_units + other.claimed_compute_units,
+            claimed_estimated_compute_units=self.claimed_estimated_compute_units
+            + other.claimed_estimated_compute_units,
+            claimed_relays=self.claimed_relays + other.claimed_relays,
+            # Settled metrics
+            settled_pokt=self.settled_pokt + other.settled_pokt,
+            settled_compute_units=self.settled_compute_units + other.settled_compute_units,
+            settled_estimated_compute_units=self.settled_estimated_compute_units
+            + other.settled_estimated_compute_units,
+            settled_relays=self.settled_relays + other.settled_relays,
+            # Sets
             unique_applications=self.unique_applications | other.unique_applications,
             unique_suppliers=self.unique_suppliers | other.unique_suppliers,
             unique_sessions=self.unique_sessions | other.unique_sessions,
+            # Message counts
             total_messages=self.total_messages + other.total_messages,
             claim_messages=self.claim_messages + other.claim_messages,
             proof_messages=self.proof_messages + other.proof_messages,
@@ -96,49 +132,6 @@ class RangeStats:
     blocks: List[BlockData]
     total_stats: BlockStats
 
-    def __str__(self) -> str:
-        output = []
-        output.append("--------------------")
-        output.append("Per Block Statistics:")
-        output.append("--------------------")
-        for block in self.blocks:
-            output.append(f"Block {block.block_id}:")
-            output.append(f"  Num Txs: {block.stats.num_txs:,}")
-            output.append(f"  Txs size: {block.stats.tx_mb:.2f} MB")
-            output.append(f"  Full block size: {block.stats.block_mb:.2f} MB")
-            output.append(f"  Claimed POKT: {block.stats.total_claimed_pokt:.6f}")
-            output.append(f"  Claimed compute units: {block.stats.total_claimed_compute_units:,}")
-            output.append(f"  Estimated compute units: {block.stats.total_estimated_compute_units:,}")
-            output.append(f"  Number of relays: {block.stats.total_relays:,}")
-            output.append(f"  Unique applications: {len(block.stats.unique_applications):,}")
-            output.append(f"  Unique suppliers: {len(block.stats.unique_suppliers):,}")
-            output.append(f"  Unique sessions: {len(block.stats.unique_sessions):,}")
-            output.append(f"  Total messages: {block.stats.total_messages:,}")
-            output.append(f"  Claim messages: {block.stats.claim_messages:,}")
-            output.append(f"  Proof messages: {block.stats.proof_messages:,}")
-            output.append("")
-
-        first_block = self.blocks[0].block_id if self.blocks else 0
-        last_block = self.blocks[-1].block_id if self.blocks else 0
-        output.append("------------------------------------------")
-        output.append(f"Total Statistics ({first_block} - {last_block}):")
-        output.append("------------------------------------------")
-        output.append(f"Total Txs: {self.total_stats.num_txs:,}")
-        output.append(f"Total Txs size: {self.total_stats.tx_mb:.2f} MB")
-        output.append(f"Total Block size: {self.total_stats.block_mb:.2f} MB")
-        output.append(f"Total Claimed POKT: {self.total_stats.total_claimed_pokt:.6f}")
-        output.append(f"Total Claimed compute units: {self.total_stats.total_claimed_compute_units:,}")
-        output.append(f"Total Estimated compute units: {self.total_stats.total_estimated_compute_units:,}")
-        output.append(f"Total Number of relays: {self.total_stats.total_relays:,}")
-        output.append(f"Total Unique applications: {len(self.total_stats.unique_applications):,}")
-        output.append(f"Total Unique suppliers: {len(self.total_stats.unique_suppliers):,}")
-        output.append(f"Total Unique sessions: {len(self.total_stats.unique_sessions):,}")
-        output.append(f"Total messages: {self.total_stats.total_messages:,}")
-        output.append(f"Total claim messages: {self.total_stats.claim_messages:,}")
-        output.append(f"Total proof messages: {self.total_stats.proof_messages:,}")
-
-        return "\n".join(output)
-
     def to_dataframe(self) -> pd.DataFrame:
         """Convert block stats to a pandas DataFrame."""
 
@@ -150,13 +143,21 @@ class RangeStats:
                 "num_txs": block.stats.num_txs,
                 "tx_size_mb": round(block.stats.tx_mb, 2),
                 "block_size_mb": round(block.stats.block_mb, 2),
-                "claimed_pokt": round(block.stats.total_claimed_pokt, 6),
-                "claimed_compute_units": block.stats.total_claimed_compute_units,
-                "estimated_compute_units": block.stats.total_estimated_compute_units,
-                "num_relays": block.stats.total_relays,
+                # Claimed metrics
+                "claimed_pokt": round(block.stats.claimed_pokt, 6),
+                "claimed_compute_units": block.stats.claimed_compute_units,
+                "claimed_estimated_compute_units": block.stats.claimed_estimated_compute_units,
+                "claimed_relays": block.stats.claimed_relays,
+                # Settled metrics
+                "settled_pokt": round(block.stats.settled_pokt, 6),
+                "settled_compute_units": block.stats.settled_compute_units,
+                "settled_estimated_compute_units": block.stats.settled_estimated_compute_units,
+                "settled_relays": block.stats.settled_relays,
+                # Sets
                 "unique_applications": len(block.stats.unique_applications),
                 "unique_suppliers": len(block.stats.unique_suppliers),
                 "unique_sessions": len(block.stats.unique_sessions),
+                # Message counts
                 "total_messages": block.stats.total_messages,
                 "claim_messages": block.stats.claim_messages,
                 "proof_messages": block.stats.proof_messages,
@@ -172,13 +173,21 @@ class RangeStats:
             "num_txs": self.total_stats.num_txs,
             "tx_size_mb": round(self.total_stats.tx_mb, 2),
             "block_size_mb": round(self.total_stats.block_mb, 2),
-            "claimed_pokt": round(self.total_stats.total_claimed_pokt, 6),
-            "claimed_compute_units": self.total_stats.total_claimed_compute_units,
-            "estimated_compute_units": self.total_stats.total_estimated_compute_units,
-            "num_relays": self.total_stats.total_relays,
+            # Claimed metrics
+            "claimed_pokt": round(self.total_stats.claimed_pokt, 6),
+            "claimed_compute_units": self.total_stats.claimed_compute_units,
+            "claimed_estimated_compute_units": self.total_stats.claimed_estimated_compute_units,
+            "claimed_relays": self.total_stats.claimed_relays,
+            # Settled metrics
+            "settled_pokt": round(self.total_stats.settled_pokt, 6),
+            "settled_compute_units": self.total_stats.settled_compute_units,
+            "settled_estimated_compute_units": self.total_stats.settled_estimated_compute_units,
+            "settled_relays": self.total_stats.settled_relays,
+            # Sets
             "unique_applications": len(self.total_stats.unique_applications),
             "unique_suppliers": len(self.total_stats.unique_suppliers),
             "unique_sessions": len(self.total_stats.unique_sessions),
+            # Message counts
             "total_messages": self.total_stats.total_messages,
             "claim_messages": self.total_stats.claim_messages,
             "proof_messages": self.total_stats.proof_messages,
@@ -331,10 +340,17 @@ class BlockFetcher:
         block_json = json.dumps(block_data)
         block_mb = len(block_json.encode("utf-8")) / (1024 * 1024)
 
-        total_claimed_pokt = 0.0
-        total_claimed_compute_units = 0
-        total_estimated_compute_units = 0
-        total_relays = 0
+        # Claimed metrics
+        claimed_pokt = 0.0
+        claimed_compute_units = 0
+        claimed_estimated_compute_units = 0
+        claimed_relays = 0
+
+        # Settled metrics
+        settled_pokt = 0.0
+        settled_compute_units = 0
+        settled_estimated_compute_units = 0
+        settled_relays = 0
 
         unique_applications = set()
         unique_suppliers = set()
@@ -348,22 +364,25 @@ class BlockFetcher:
             for event in tx_result.get("events", []):
                 created_metrics = self._extract_event_metrics_created(event)
                 settled_metrics = self._extract_event_metrics_settled(event)
-                msg_metrics = self._extract_msg_metrics(event)
 
-                total_claimed_pokt += created_metrics.claimed_pokt + settled_metrics.claimed_pokt
-                total_claimed_compute_units += (
-                    created_metrics.claimed_compute_units + settled_metrics.claimed_compute_units
-                )
-                total_estimated_compute_units += (
-                    created_metrics.estimated_compute_units + settled_metrics.estimated_compute_units
-                )
-                total_relays += created_metrics.num_relays + settled_metrics.num_relays
+                # Update claimed metrics
+                claimed_pokt += created_metrics.claimed_pokt
+                claimed_compute_units += created_metrics.claimed_compute_units
+                claimed_estimated_compute_units += created_metrics.estimated_compute_units
+                claimed_relays += created_metrics.num_relays
+
+                # Update settled metrics
+                settled_pokt += settled_metrics.claimed_pokt
+                settled_compute_units += settled_metrics.claimed_compute_units
+                settled_estimated_compute_units += settled_metrics.estimated_compute_units
+                settled_relays += settled_metrics.num_relays
 
                 # Update unique sets
                 unique_applications.update(created_metrics.application_addresses)
                 unique_suppliers.update(created_metrics.supplier_addresses)
                 unique_sessions.update(created_metrics.session_ids)
 
+                msg_metrics = self._extract_msg_metrics(event)
                 if msg_metrics:
                     total_messages += 1
                     if msg_metrics.msg_type == "/poktroll.proof.MsgCreateClaim":
@@ -375,10 +394,14 @@ class BlockFetcher:
             tx_mb=tx_mb,
             block_mb=block_mb,
             num_txs=len(txs),
-            total_claimed_pokt=total_claimed_pokt,
-            total_claimed_compute_units=total_claimed_compute_units,
-            total_estimated_compute_units=total_estimated_compute_units,
-            total_relays=total_relays,
+            claimed_pokt=claimed_pokt,
+            claimed_compute_units=claimed_compute_units,
+            claimed_estimated_compute_units=claimed_estimated_compute_units,
+            claimed_relays=claimed_relays,
+            settled_pokt=settled_pokt,
+            settled_compute_units=settled_compute_units,
+            settled_estimated_compute_units=settled_estimated_compute_units,
+            settled_relays=settled_relays,
             unique_applications=unique_applications,
             unique_suppliers=unique_suppliers,
             unique_sessions=unique_sessions,
