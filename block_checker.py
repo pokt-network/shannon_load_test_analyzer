@@ -4,10 +4,9 @@ import time
 import argparse
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional, Dict, List
+from typing import Optional, Dict, List, Set
 import subprocess
 import base64
-import pandas as pd
 
 
 @dataclass
@@ -25,6 +24,15 @@ class EventMetrics:
     claimed_compute_units: int = 0
     estimated_compute_units: int = 0
     num_relays: int = 0
+    application_addresses: Set[str] = None
+    supplier_addresses: Set[str] = None
+    session_ids: Set[str] = None
+
+    def __post_init__(self):
+        # Initialize sets in post_init to avoid mutable default argument issues
+        self.application_addresses = set() if self.application_addresses is None else self.application_addresses
+        self.supplier_addresses = set() if self.supplier_addresses is None else self.supplier_addresses
+        self.session_ids = set() if self.session_ids is None else self.session_ids
 
 
 @dataclass
@@ -36,10 +44,13 @@ class BlockStats:
     total_claimed_compute_units: int
     total_estimated_compute_units: int
     total_relays: int
+    unique_applications: Set[str]
+    unique_suppliers: Set[str]
+    unique_sessions: Set[str]
 
     @classmethod
     def zero(cls):
-        return cls(0.0, 0.0, 0, 0.0, 0, 0, 0)
+        return cls(0.0, 0.0, 0, 0.0, 0, 0, 0, set(), set(), set())
 
     def __add__(self: "BlockStats", other: "BlockStats"):
         return BlockStats(
@@ -50,6 +61,9 @@ class BlockStats:
             total_claimed_compute_units=self.total_claimed_compute_units + other.total_claimed_compute_units,
             total_estimated_compute_units=self.total_estimated_compute_units + other.total_estimated_compute_units,
             total_relays=self.total_relays + other.total_relays,
+            unique_applications=self.unique_applications | other.unique_applications,
+            unique_suppliers=self.unique_suppliers | other.unique_suppliers,
+            unique_sessions=self.unique_sessions | other.unique_sessions,
         )
 
 
@@ -75,11 +89,14 @@ class RangeStats:
             output.append(f"Block {block.block_id}:")
             output.append(f"  Num Txs: {block.stats.num_txs:,}")
             output.append(f"  Txs size: {block.stats.tx_mb:.2f} MB")
-            output.append(f"  Full block size: {block.stats.block_mb:.2f} MB")  # Added block size output
+            output.append(f"  Full block size: {block.stats.block_mb:.2f} MB")
             output.append(f"  Claimed POKT: {block.stats.total_claimed_pokt:.6f}")
             output.append(f"  Claimed compute units: {block.stats.total_claimed_compute_units:,}")
             output.append(f"  Estimated compute units: {block.stats.total_estimated_compute_units:,}")
             output.append(f"  Number of relays: {block.stats.total_relays:,}")
+            output.append(f"  Unique applications: {len(block.stats.unique_applications):,}")
+            output.append(f"  Unique suppliers: {len(block.stats.unique_suppliers):,}")
+            output.append(f"  Unique sessions: {len(block.stats.unique_sessions):,}")
             output.append("")
 
         first_block = self.blocks[0].block_id if self.blocks else 0
@@ -89,13 +106,68 @@ class RangeStats:
         output.append("------------------------------------------")
         output.append(f"Total Txs: {self.total_stats.num_txs:,}")
         output.append(f"Total Txs size: {self.total_stats.tx_mb:.2f} MB")
-        output.append(f"Total Block size: {self.total_stats.block_mb:.2f} MB")  # Added total block size
+        output.append(f"Total Block size: {self.total_stats.block_mb:.2f} MB")
         output.append(f"Total Claimed POKT: {self.total_stats.total_claimed_pokt:.6f}")
         output.append(f"Total Claimed compute units: {self.total_stats.total_claimed_compute_units:,}")
         output.append(f"Total Estimated compute units: {self.total_stats.total_estimated_compute_units:,}")
         output.append(f"Total Number of relays: {self.total_stats.total_relays:,}")
+        output.append(f"Total Unique applications: {len(self.total_stats.unique_applications):,}")
+        output.append(f"Total Unique suppliers: {len(self.total_stats.unique_suppliers):,}")
+        output.append(f"Total Unique sessions: {len(self.total_stats.unique_sessions):,}")
 
         return "\n".join(output)
+
+    def to_dataframe(self) -> "pd.DataFrame":
+        """Convert block stats to a pandas DataFrame."""
+        import pandas as pd
+
+        # Prepare data for each block
+        data = []
+        for block in self.blocks:
+            row = {
+                "block_id": block.block_id,
+                "num_txs": block.stats.num_txs,
+                "tx_size_mb": round(block.stats.tx_mb, 2),
+                "block_size_mb": round(block.stats.block_mb, 2),
+                "claimed_pokt": round(block.stats.total_claimed_pokt, 6),
+                "claimed_compute_units": block.stats.total_claimed_compute_units,
+                "estimated_compute_units": block.stats.total_estimated_compute_units,
+                "num_relays": block.stats.total_relays,
+                "unique_applications": len(block.stats.unique_applications),
+                "unique_suppliers": len(block.stats.unique_suppliers),
+                "unique_sessions": len(block.stats.unique_sessions),
+            }
+            data.append(row)
+
+        # Create DataFrame
+        df = pd.DataFrame(data)
+
+        # Add a row for totals
+        totals = {
+            "block_id": f"Total ({self.blocks[0].block_id}-{self.blocks[-1].block_id})",
+            "num_txs": self.total_stats.num_txs,
+            "tx_size_mb": round(self.total_stats.tx_mb, 2),
+            "block_size_mb": round(self.total_stats.block_mb, 2),
+            "claimed_pokt": round(self.total_stats.total_claimed_pokt, 6),
+            "claimed_compute_units": self.total_stats.total_claimed_compute_units,
+            "estimated_compute_units": self.total_stats.total_estimated_compute_units,
+            "num_relays": self.total_stats.total_relays,
+            "unique_applications": len(self.total_stats.unique_applications),
+            "unique_suppliers": len(self.total_stats.unique_suppliers),
+            "unique_sessions": len(self.total_stats.unique_sessions),
+        }
+
+        # Append totals row
+        df.loc[len(df)] = totals
+
+        return df
+
+    def tabulate(self) -> str:
+        """Return a tabulated string representation of the stats."""
+        from tabulate import tabulate
+
+        df = self.to_dataframe()
+        return tabulate(df, headers="keys", tablefmt="pipe", floatfmt=".6f")
 
 
 class BlockFetchError(Exception):
@@ -103,6 +175,7 @@ class BlockFetchError(Exception):
 
 
 class BlockFetcher:
+
     def __init__(self, config: Optional[Config] = None):
         self.config = config or Config()
         self._setup_logging()
@@ -163,6 +236,14 @@ class BlockFetcher:
                     metrics.estimated_compute_units = int(value.strip('"'))
                 elif key == "num_relays":
                     metrics.num_relays = int(value.strip('"'))
+                elif key == "claim":
+                    try:
+                        claim_data = json.loads(value)
+                        metrics.supplier_addresses.add(claim_data["supplier_operator_address"])
+                        metrics.application_addresses.add(claim_data["session_header"]["application_address"])
+                        metrics.session_ids.add(claim_data["session_header"]["session_id"])
+                    except (json.JSONDecodeError, KeyError) as e:
+                        self.logger.warning(f"Error parsing claim data: {e}")
         return metrics
 
     def _extract_event_metrics_settled(self, event: Dict) -> EventMetrics:
@@ -194,11 +275,15 @@ class BlockFetcher:
         total_claimed_compute_units = 0
         total_estimated_compute_units = 0
         total_relays = 0
+        unique_applications = set()
+        unique_suppliers = set()
+        unique_sessions = set()
 
         for tx_result in block_results.get("txs_results", []) or []:
             for event in tx_result.get("events", []):
                 created_metrics = self._extract_event_metrics_created(event)
                 settled_metrics = self._extract_event_metrics_settled(event)
+
                 total_claimed_pokt += created_metrics.claimed_pokt + settled_metrics.claimed_pokt
                 total_claimed_compute_units += (
                     created_metrics.claimed_compute_units + settled_metrics.claimed_compute_units
@@ -208,6 +293,11 @@ class BlockFetcher:
                 )
                 total_relays += created_metrics.num_relays + settled_metrics.num_relays
 
+                # Update unique sets
+                unique_applications.update(created_metrics.application_addresses)
+                unique_suppliers.update(created_metrics.supplier_addresses)
+                unique_sessions.update(created_metrics.session_ids)
+
         return BlockStats(
             tx_mb=tx_mb,
             block_mb=block_mb,
@@ -216,6 +306,9 @@ class BlockFetcher:
             total_claimed_compute_units=total_claimed_compute_units,
             total_estimated_compute_units=total_estimated_compute_units,
             total_relays=total_relays,
+            unique_applications=unique_applications,
+            unique_suppliers=unique_suppliers,
+            unique_sessions=unique_sessions,
         )
 
     def _fetch_single(self, block_id: int, is_block_results: bool, force: bool = False) -> tuple[Path, Optional[dict]]:
@@ -281,4 +374,5 @@ if __name__ == "__main__":
     args = parse_args()
     fetcher = BlockFetcher()
     stats = fetcher.fetch_range(args.block_start, args.block_end)
-    print(stats)
+    # print(stats)
+    print(stats.tabulate())
