@@ -37,12 +37,14 @@ class EventMetrics:
     application_addresses: Set[str] = None
     supplier_addresses: Set[str] = None
     session_ids: Set[str] = None
+    service_ids: Set[str] = None
 
     def __post_init__(self):
         # Initialize sets in post_init to avoid mutable default argument issues
         self.application_addresses = set() if self.application_addresses is None else self.application_addresses
         self.supplier_addresses = set() if self.supplier_addresses is None else self.supplier_addresses
         self.session_ids = set() if self.session_ids is None else self.session_ids
+        self.service_ids = set() if self.service_ids is None else self.service_ids
 
 
 @dataclass
@@ -64,6 +66,7 @@ class BlockStats:
     unique_applications: Set[str]
     unique_suppliers: Set[str]
     unique_sessions: Set[str]
+    unique_services: Set[str]
     # Message counts
     total_messages: int = 0
     claim_messages: int = 0
@@ -86,6 +89,7 @@ class BlockStats:
             set(),
             set(),
             set(),  # Sets
+            set(),  # unique_services
             0,
             0,
             0,  # Message counts
@@ -112,6 +116,7 @@ class BlockStats:
             unique_applications=self.unique_applications | other.unique_applications,
             unique_suppliers=self.unique_suppliers | other.unique_suppliers,
             unique_sessions=self.unique_sessions | other.unique_sessions,
+            unique_services=self.unique_services | other.unique_services,
             # Message counts
             total_messages=self.total_messages + other.total_messages,
             claim_messages=self.claim_messages + other.claim_messages,
@@ -157,6 +162,7 @@ class RangeStats:
                 "unique_applications": len(block.stats.unique_applications),
                 "unique_suppliers": len(block.stats.unique_suppliers),
                 "unique_sessions": len(block.stats.unique_sessions),
+                "unique_services": len(block.stats.unique_services),
                 # Message counts
                 "total_messages": block.stats.total_messages,
                 "claim_messages": block.stats.claim_messages,
@@ -187,6 +193,7 @@ class RangeStats:
             "unique_applications": len(self.total_stats.unique_applications),
             "unique_suppliers": len(self.total_stats.unique_suppliers),
             "unique_sessions": len(self.total_stats.unique_sessions),
+            "unique_services": len(self.total_stats.unique_services),
             # Message counts
             "total_messages": self.total_stats.total_messages,
             "claim_messages": self.total_stats.claim_messages,
@@ -314,6 +321,8 @@ class BlockFetcher:
                         metrics.session_ids.add(claim_data["session_header"]["session_id"])
                     except (json.JSONDecodeError, KeyError) as e:
                         self.logger.warning(f"Error parsing claim data: {e}")
+                elif key == "service_id":
+                    metrics.service_ids.add(value.strip('"'))
         return metrics
 
     def _extract_event_metrics_settled(self, event: Dict) -> EventMetrics:
@@ -330,6 +339,8 @@ class BlockFetcher:
                     metrics.estimated_compute_units = int(value.strip('"'))
                 elif key == "num_relays":
                     metrics.num_relays = int(value.strip('"'))
+                elif key == "service_id":
+                    metrics.service_ids.add(value.strip('"'))
         return metrics
 
     def _compute_block_stats(self, block_data: dict, block_results: dict) -> BlockStats:
@@ -355,6 +366,7 @@ class BlockFetcher:
         unique_applications = set()
         unique_suppliers = set()
         unique_sessions = set()
+        unique_services = set()
 
         total_messages = 0
         claim_messages = 0
@@ -381,6 +393,7 @@ class BlockFetcher:
                 unique_applications.update(created_metrics.application_addresses)
                 unique_suppliers.update(created_metrics.supplier_addresses)
                 unique_sessions.update(created_metrics.session_ids)
+                unique_services.update(created_metrics.service_ids)
 
                 msg_metrics = self._extract_msg_metrics(event)
                 if msg_metrics:
@@ -405,6 +418,7 @@ class BlockFetcher:
             unique_applications=unique_applications,
             unique_suppliers=unique_suppliers,
             unique_sessions=unique_sessions,
+            unique_services=unique_services,
             total_messages=total_messages,
             claim_messages=claim_messages,
             proof_messages=proof_messages,
