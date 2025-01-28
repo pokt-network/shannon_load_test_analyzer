@@ -1,4 +1,6 @@
 import json
+from tabulate import tabulate
+import pandas as pd
 import logging
 import time
 import argparse
@@ -16,6 +18,14 @@ class Config:
     rate_limit: float = 0.5
     max_retries: int = 3
     retry_delay: float = 1.0
+
+
+@dataclass
+class MsgMetrics:
+    msg_type: str = ""
+    sender: str = ""
+    module: str = ""
+    msg_index: str = ""
 
 
 @dataclass
@@ -47,6 +57,9 @@ class BlockStats:
     unique_applications: Set[str]
     unique_suppliers: Set[str]
     unique_sessions: Set[str]
+    total_messages: int = 0
+    claim_messages: int = 0
+    proof_messages: int = 0
 
     @classmethod
     def zero(cls):
@@ -64,6 +77,9 @@ class BlockStats:
             unique_applications=self.unique_applications | other.unique_applications,
             unique_suppliers=self.unique_suppliers | other.unique_suppliers,
             unique_sessions=self.unique_sessions | other.unique_sessions,
+            total_messages=self.total_messages + other.total_messages,
+            claim_messages=self.claim_messages + other.claim_messages,
+            proof_messages=self.proof_messages + other.proof_messages,
         )
 
 
@@ -97,6 +113,9 @@ class RangeStats:
             output.append(f"  Unique applications: {len(block.stats.unique_applications):,}")
             output.append(f"  Unique suppliers: {len(block.stats.unique_suppliers):,}")
             output.append(f"  Unique sessions: {len(block.stats.unique_sessions):,}")
+            output.append(f"  Total messages: {block.stats.total_messages:,}")
+            output.append(f"  Claim messages: {block.stats.claim_messages:,}")
+            output.append(f"  Proof messages: {block.stats.proof_messages:,}")
             output.append("")
 
         first_block = self.blocks[0].block_id if self.blocks else 0
@@ -114,12 +133,14 @@ class RangeStats:
         output.append(f"Total Unique applications: {len(self.total_stats.unique_applications):,}")
         output.append(f"Total Unique suppliers: {len(self.total_stats.unique_suppliers):,}")
         output.append(f"Total Unique sessions: {len(self.total_stats.unique_sessions):,}")
+        output.append(f"Total messages: {self.total_stats.total_messages:,}")
+        output.append(f"Total claim messages: {self.total_stats.claim_messages:,}")
+        output.append(f"Total proof messages: {self.total_stats.proof_messages:,}")
 
         return "\n".join(output)
 
-    def to_dataframe(self) -> "pd.DataFrame":
+    def to_dataframe(self) -> pd.DataFrame:
         """Convert block stats to a pandas DataFrame."""
-        import pandas as pd
 
         # Prepare data for each block
         data = []
@@ -136,6 +157,9 @@ class RangeStats:
                 "unique_applications": len(block.stats.unique_applications),
                 "unique_suppliers": len(block.stats.unique_suppliers),
                 "unique_sessions": len(block.stats.unique_sessions),
+                "total_messages": block.stats.total_messages,
+                "claim_messages": block.stats.claim_messages,
+                "proof_messages": block.stats.proof_messages,
             }
             data.append(row)
 
@@ -155,6 +179,9 @@ class RangeStats:
             "unique_applications": len(self.total_stats.unique_applications),
             "unique_suppliers": len(self.total_stats.unique_suppliers),
             "unique_sessions": len(self.total_stats.unique_sessions),
+            "total_messages": self.total_stats.total_messages,
+            "claim_messages": self.total_stats.claim_messages,
+            "proof_messages": self.total_stats.proof_messages,
         }
 
         # Append totals row
@@ -164,10 +191,27 @@ class RangeStats:
 
     def tabulate(self) -> str:
         """Return a tabulated string representation of the stats."""
-        from tabulate import tabulate
-
         df = self.to_dataframe()
         return tabulate(df, headers="keys", tablefmt="pipe", floatfmt=".6f")
+
+    def tabulate_vertical(self) -> str:
+        """Return a tabulated string representation of the stats."""
+        df = self.to_dataframe()
+        # Transpose and prepare the DataFrame
+        df_transposed = df.set_index("block_id").T.reset_index()
+        df_transposed.columns.name = None
+        df_transposed = df_transposed.rename(columns={"index": "metric"})
+
+        # Format numbers with commas and 2 decimal places
+        for col in df_transposed.columns:
+            if col != "metric":  # Skip the metric column
+                df_transposed[col] = df_transposed[col].apply(
+                    lambda x: f"{x:,.2f}" if isinstance(x, (int, float)) else x
+                )
+
+        return tabulate(
+            df_transposed, headers="keys", tablefmt="pipe", showindex=False, numalign="right", stralign="left"
+        )
 
 
 class BlockFetchError(Exception):
@@ -222,6 +266,23 @@ class BlockFetcher:
             self.logger.error(f"Invalid JSON in response: {output_file}")
             return False
 
+    def _extract_msg_metrics(self, event: Dict) -> Optional[MsgMetrics]:
+        if event.get("type") == "message":
+            metrics = MsgMetrics()
+            for attr in event.get("attributes", []) or []:
+                key = attr["key"]
+                value = attr["value"]
+                if key == "action" and value in ["/poktroll.proof.MsgCreateClaim", "/poktroll.proof.MsgSubmitProof"]:
+                    metrics.msg_type = value
+                elif key == "sender":
+                    metrics.sender = value
+                elif key == "module":
+                    metrics.module = value
+                elif key == "msg_index":
+                    metrics.msg_index = value
+            return metrics if metrics.msg_type else None
+        return None
+
     def _extract_event_metrics_created(self, event: Dict) -> EventMetrics:
         metrics = EventMetrics()
         if event.get("type") == "poktroll.proof.EventClaimCreated":
@@ -250,7 +311,6 @@ class BlockFetcher:
         metrics = EventMetrics()
         if event.get("type") == "poktroll.proof.EventClaimSettled":
             for attr in event.get("attributes", []) or []:
-                print("OLSH", attr)
                 key = attr["key"]
                 value = attr["value"]
                 if key == "claimed_upokt":
@@ -275,14 +335,20 @@ class BlockFetcher:
         total_claimed_compute_units = 0
         total_estimated_compute_units = 0
         total_relays = 0
+
         unique_applications = set()
         unique_suppliers = set()
         unique_sessions = set()
+
+        total_messages = 0
+        claim_messages = 0
+        proof_messages = 0
 
         for tx_result in block_results.get("txs_results", []) or []:
             for event in tx_result.get("events", []):
                 created_metrics = self._extract_event_metrics_created(event)
                 settled_metrics = self._extract_event_metrics_settled(event)
+                msg_metrics = self._extract_msg_metrics(event)
 
                 total_claimed_pokt += created_metrics.claimed_pokt + settled_metrics.claimed_pokt
                 total_claimed_compute_units += (
@@ -298,6 +364,13 @@ class BlockFetcher:
                 unique_suppliers.update(created_metrics.supplier_addresses)
                 unique_sessions.update(created_metrics.session_ids)
 
+                if msg_metrics:
+                    total_messages += 1
+                    if msg_metrics.msg_type == "/poktroll.proof.MsgCreateClaim":
+                        claim_messages += 1
+                    elif msg_metrics.msg_type == "/poktroll.proof.MsgSubmitProof":
+                        proof_messages += 1
+
         return BlockStats(
             tx_mb=tx_mb,
             block_mb=block_mb,
@@ -309,6 +382,9 @@ class BlockFetcher:
             unique_applications=unique_applications,
             unique_suppliers=unique_suppliers,
             unique_sessions=unique_sessions,
+            total_messages=total_messages,
+            claim_messages=claim_messages,
+            proof_messages=proof_messages,
         )
 
     def _fetch_single(self, block_id: int, is_block_results: bool, force: bool = False) -> tuple[Path, Optional[dict]]:
@@ -375,4 +451,5 @@ if __name__ == "__main__":
     fetcher = BlockFetcher()
     stats = fetcher.fetch_range(args.block_start, args.block_end)
     # print(stats)
-    print(stats.tabulate())
+    print(stats.tabulate_vertical())
+    # print(stats.tabulate())
