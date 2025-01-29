@@ -319,10 +319,9 @@ class BlockFetcher:
                         metrics.supplier_addresses.add(claim_data["supplier_operator_address"])
                         metrics.application_addresses.add(claim_data["session_header"]["application_address"])
                         metrics.session_ids.add(claim_data["session_header"]["session_id"])
+                        metrics.service_ids.add(claim_data["session_header"]["service_id"])
                     except (json.JSONDecodeError, KeyError) as e:
                         self.logger.warning(f"Error parsing claim data: {e}")
-                elif key == "service_id":
-                    metrics.service_ids.add(value.strip('"'))
         return metrics
 
     def _extract_event_metrics_settled(self, event: Dict) -> EventMetrics:
@@ -339,8 +338,6 @@ class BlockFetcher:
                     metrics.estimated_compute_units = int(value.strip('"'))
                 elif key == "num_relays":
                     metrics.num_relays = int(value.strip('"'))
-                elif key == "service_id":
-                    metrics.service_ids.add(value.strip('"'))
         return metrics
 
     def _compute_block_stats(self, block_data: dict, block_results: dict) -> BlockStats:
